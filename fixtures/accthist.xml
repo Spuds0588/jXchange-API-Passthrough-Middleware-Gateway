@@ -1,0 +1,39 @@
+<AcctHistSrchResponse xmlns="http://jackhenry.com/jxchange/TPG/2008">
+  <SrchMsgRsHdr>
+    <jXchangeHdr>
+      <JxVer>R2024.1</JxVer>
+      <InstRtId>011001276</InstRtId>
+      <InstEnv>TEST</InstEnv>
+    </jXchangeHdr>
+    <SentRec>3</SentRec>
+  </SrchMsgRsHdr>
+  <AcctHistSrchRecArray>
+    <AcctHistSrchRec>
+      <DepHistSrchRec>
+        <HistRecId>TX-998811</HistRecId>
+        <PostDt>2026-10-28</PostDt>
+        <Amt>-45.20</Amt>
+        <TrnType>D</TrnType>
+        <TrnCodeDesc>ACH DEBIT UTILITY CO</TrnCodeDesc>
+      </DepHistSrchRec>
+    </AcctHistSrchRec>
+    <AcctHistSrchRec>
+      <DepHistSrchRec>
+        <HistRecId>TX-998812</HistRecId>
+        <PostDt>2026-10-27</PostDt>
+        <Amt>2500.00</Amt>
+        <TrnType>C</TrnType>
+        <TrnCodeDesc>PAYROLL DEPOSIT</TrnCodeDesc>
+      </DepHistSrchRec>
+    </AcctHistSrchRec>
+    <AcctHistSrchRec>
+      <DepHistSrchRec>
+        <HistRecId>TX-998813</HistRecId>
+        <PostDt>2026-10-26</PostDt>
+        <Amt>-12.99</Amt>
+        <TrnType>D</TrnType>
+        <TrnStmtDesc>DEBIT CARD PURCHASE</TrnStmtDesc>
+      </DepHistSrchRec>
+    </AcctHistSrchRec>
+  </AcctHistSrchRecArray>
+</AcctHistSrchResponse>

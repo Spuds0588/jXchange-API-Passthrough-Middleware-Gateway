@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jXchange API Passthrough &amp; Middleware Gateway — JSON REST for Jack Henry cores</title>
+<meta name="description" content="Open-source, read-only AWS gateway that turns Jack Henry jXchange SOAP/XML into JSON REST for banks and credit unions, with persona masking, self-serve keys, and a static egress IP.">
+<link rel="canonical" href="https://spuds0588.github.io/jXchange-API-Passthrough-Middleware-Gateway/">
+<meta name="robots" content="index, follow">
+<meta name="author" content="Corey Burns">
+<meta property="og:type" content="website">
+<meta property="og:title" content="jXchange API Passthrough &amp; Middleware Gateway">
+<meta property="og:description" content="Read-only JSON REST for Jack Henry jXchange. Deploys into the institution's own AWS account; no vendor footprint, no loan data at rest.">
+<meta property="og:url" content="https://spuds0588.github.io/jXchange-API-Passthrough-Middleware-Gateway/">
+<meta property="og:site_name" content="jXchange API Passthrough &amp; Middleware Gateway">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="jXchange API Passthrough &amp; Middleware Gateway">
+<meta name="twitter:description" content="SOAP to JSON for Jack Henry Silverlake and Symitar, deployed in the bank's AWS account. Community maintained, MIT licensed.">
+<meta name="theme-color" content="#0b1220">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "jXchange API Passthrough & Middleware Gateway",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "AWS Lambda",
+  "description": "An open-source, read-only middleware gateway that translates Jack Henry jXchange SOAP/XML into JSON REST for community banks and credit unions. Deny-by-default persona masking, invite-scoped API keys, and a static egress IP.",
+  "url": "https://spuds0588.github.io/jXchange-API-Passthrough-Middleware-Gateway/",
+  "codeRepository": "https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway",
+  "license": "https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/LICENSE",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "Corey Burns" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What does this gateway actually do?",
+      "acceptedAnswer": { "@type": "Answer", "text": "External partners send JSON REST requests with an x-api-key. The gateway builds a jXchange SOAP 1.1 envelope, adds the institution's consumer credentials, calls the core over mTLS, parses the SOAP response, and returns normalized JSON." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it support money movement or account changes?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. The MVP is read-only. It exposes AcctInq, AcctHistSrch, and CustInq. Write endpoints return 501 instead of pretending to accept a loan or account update." }
+    },
+    {
+      "@type": "Question",
+      "name": "Where does the gateway run and who holds the credentials?",
+      "acceptedAnswer": { "@type": "Answer", "text": "It deploys into the financial institution's own AWS account with one CloudFormation template. The institution supplies its existing Jack Henry consumer credentials and optional mTLS material in Secrets Manager. There is no vendor-hosted service." }
+    },
+    {
+      "@type": "Question",
+      "name": "Why is a static egress IP needed?",
+      "acceptedAnswer": { "@type": "Answer", "text": "jXchange endpoints commonly allowlist source addresses. The template provisions a VPC, NAT gateway, and Elastic IP so Jack Henry can whitelist one stable address instead of a range of Lambda addresses." }
+    },
+    {
+      "@type": "Question",
+      "name": "Is this an official Jack Henry product?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. It is an independent, community-maintained open-source template, not affiliated with or endorsed by Jack Henry & Associates. Verify schema shapes and credentials with your own institution and Jack Henry contacts." }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I contribute or report a problem?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Open a GitHub issue with a minimal reproduction and sanitized logs, or send a pull request with a regression test. Contributions are the roadmap: the maintainers have no Jack Henry access and no AWS account for this project." }
+    }
+  ]
+}
+</script>
+<style>
+  :root { color-scheme: dark; --bg:#080f1c; --panel:#101b2d; --line:#1e3350; --text:#e6edf7; --muted:#93a5bf; --accent:#4f9cf9; --accent-2:#22d3a6; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent); }
+  .wrap { width: min(1040px, 92vw); margin: 0 auto; }
+  header.hero { padding: 72px 0 40px; border-bottom: 1px solid var(--line); background: radial-gradient(1200px 400px at 50% -10%, #123055 0%, var(--bg) 70%); }
+  .eyebrow { display: inline-block; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--accent-2); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { margin: 18px 0 12px; font-size: clamp(30px, 5vw, 48px); line-height: 1.12; letter-spacing: -.02em; }
+  h2 { margin: 44px 0 12px; font-size: 24px; letter-spacing: -.01em; }
+  h3 { margin: 24px 0 8px; font-size: 17px; }
+  p.lede { max-width: 62ch; color: #c6d4e8; font-size: 18px; }
+  p, li { color: #c6d4e8; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+  .btn { display: inline-block; padding: 11px 16px; border-radius: 9px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #04101f; }
+  .btn.ghost { color: var(--text); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card { padding: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  .card h3 { margin-top: 0; }
+  .card p { margin: 0; font-size: 14px; color: var(--muted); }
+  pre { overflow-x: auto; padding: 14px; background: #030812; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; line-height: 1.5; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .92em; }
+  :not(pre) > code { padding: 1px 5px; background: #030812; border: 1px solid var(--line); border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  td.path { font-family: ui-monospace, Menlo, Consolas, monospace; color: #fcd34d; }
+  .table-wrap { overflow-x: auto; }
+  .notice { margin: 18px 0; padding: 14px 16px; border-left: 3px solid var(--accent-2); background: var(--panel); border-radius: 8px; font-size: 14px; }
+  .notice strong { color: var(--text); }
+  details { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { margin: 8px 0 0; color: var(--muted); font-size: 15px; }
+  footer { margin-top: 56px; padding: 28px 0 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  footer a { margin-right: 14px; }
+  ul.checks { padding-left: 20px; }
+  ul.checks li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">Open source · MIT · read-only MVP</span>
+    <h1>jXchange API Passthrough &amp; Middleware Gateway</h1>
+    <p class="lede">Give fintech partners clean JSON REST access to Jack Henry <strong>Silverlake</strong> and <strong>Symitar</strong> cores without handing them a SOAP toolkit, the institution's consumer credentials, or a new vendor in the data path.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway">View the source</a>
+      <a class="btn ghost" href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/README.md">Deploy guide</a>
+      <a class="btn ghost" href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/issues/new?template=bug_report.yml">Report a bug</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <h2>Why this exists</h2>
+  <p>jXchange is the integration bus in front of Jack Henry cores: SOAP 1.1, enterprise XML envelopes, WS-Security headers, mTLS certificates, and static IP allowlists. Every partner integration rebuilds the same translation layer, badly. This template deploys that layer into the institution's own AWS account from one file, so the bank keeps custody of its credentials and its core.</p>
+
+  <div class="grid">
+    <div class="card"><h3>SOAP in, JSON out</h3><p>Vendors call <code>GET /v1/accounts/{id}</code>. The gateway builds the envelope, signs the call with the bank's consumer credentials, and normalizes the response.</p></div>
+    <div class="card"><h3>Deny by default</h3><p>Each API key is locked to a persona. Anything outside that allowlist is pruned before the response leaves the gateway. Unknown personas fail closed.</p></div>
+    <div class="card"><h3>No vendor footprint</h3><p>Lambda, API Gateway, DynamoDB, Secrets Manager, and a NAT gateway with a static Elastic IP. No servers to patch, no data warehouse, no loan data at rest.</p></div>
+    <div class="card"><h3>Self-serve onboarding</h3><p>The institution shares a role-scoped invite link. The partner generates its own key in seconds. The server chooses the persona, never the client.</p></div>
+  </div>
+
+  <h2>How a request flows</h2>
+<pre><code>[ Partner ] --x-api-key--> [ API Gateway + usage plan ]
+                                |
+                                v
+                         [ Lambda gateway ]
+                          |             |
+                 [ DynamoDB ]     [ Secrets Manager ]
+                  tenant map       consumer creds, mTLS
+                          |
+                          v
+                 [ NAT gateway / Elastic IP ]  <- whitelist this one address
+                          |
+                          v
+                 [ jXchange SOAP ServiceGateway ]
+                          |
+                          v
+             [ Silverlake or Symitar core, read-only ]</code></pre>
+
+  <h2>API surface</h2>
+  <p>All <code>/v1/*</code> routes require <code>x-api-key</code>. The portal and health check are the only unauthenticated routes. Writes are not implemented: <code>POST</code>, <code>PATCH</code>, <code>PUT</code>, and <code>DELETE</code> return <code>501</code>.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>Path</th><th>jXchange operation</th><th>Returns</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET</code></td><td class="path">/health</td><td>—</td><td><code>{ status, system, mode }</code></td></tr>
+        <tr><td><code>GET</code></td><td class="path">/portal</td><td>—</td><td>Invite landing page; <code>?role=…&amp;code=…</code> renders the key form</td></tr>
+        <tr><td><code>POST</code></td><td class="path">/portal</td><td>—</td><td><code>{ apiKey, tenantName, email, role, persona }</code></td></tr>
+        <tr><td><code>GET</code></td><td class="path">/v1/accounts/{accountId}?type=D</td><td>AcctInq</td><td><code>{ accountId, accountType, coreType, status, statusDescription, balances, currency }</code></td></tr>
+        <tr><td><code>GET</code></td><td class="path">/v1/accounts/{accountId}/transactions?type=D&amp;limit=25</td><td>AcctHistSrch</td><td><code>{ accountId, transactions[] }</code></td></tr>
+        <tr><td><code>GET</code></td><td class="path">/v1/customers/{customerId}</td><td>CustInq</td><td><code>{ customerId, customerType, name, address }</code></td></tr>
+        <tr><td><code>GET</code></td><td class="path">/v1/operations</td><td>—</td><td>Catalog of supported reads</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Personas</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Invite role</th><th>Persona</th><th>Sees</th><th>Never sees</th></tr></thead>
+      <tbody>
+        <tr><td><code>verification</code></td><td>ACCOUNT_VERIFICATION</td><td>Balances, account status, customer name and address</td><td>Transaction history</td></tr>
+        <tr><td><code>lending</code></td><td>LENDING_PARTNER</td><td>Everything above plus posted transaction history</td><td>Nothing within the read contract</td></tr>
+        <tr><td><code>aggregation</code></td><td>DATA_AGGREGATOR</td><td>Balances, status, transaction history, customer ID</td><td>Customer name and address</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Core status and transaction type codes are returned as the core's canonical values. Resolve them with jXchange <code>SvcDictSrch</code>; the gateway deliberately keeps no field or code dictionary that would drift from the core.</p>
+
+  <h2>Deploy in one command</h2>
+  <p>Run this in AWS CloudShell, in the institution's account. It asks for the jXchange endpoint, routing ID, and consumer credentials, generates three role invite codes, deploys the stack, and prints the portal links and the static egress IP to whitelist.</p>
+<pre><code>bash &lt;(curl -sSL https://raw.githubusercontent.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/main/deploy.sh)</code></pre>
+
+  <div class="notice"><strong>Read the limitations before promising a partner anything.</strong> The maintainers have no Jack Henry access and no AWS account for this project, so the SOAP shapes are built from the published jXchange reference and exercised against a local fake. A real institution must confirm its response shapes, credentials, and network allowlist. The gateway is read-only by design; money movement is out of scope until a separate, reviewed design exists.</div>
+
+  <h2>Frequently asked questions</h2>
+  <details open><summary>What does this gateway actually do?</summary><p>External partners send JSON REST requests with an <code>x-api-key</code>. The gateway builds a jXchange SOAP 1.1 envelope, adds the institution's consumer credentials, calls the core over mTLS, parses the SOAP response, and returns normalized JSON. It stores no loan or account payloads.</p></details>
+  <details><summary>Does it support money movement or account changes?</summary><p>No. The MVP exposes <code>AcctInq</code>, <code>AcctHistSrch</code>, and <code>CustInq</code> only. Write methods return <code>501</code>, because silently accepting a write the core never applied is worse than refusing it.</p></details>
+  <details><summary>Where does it run and who holds the credentials?</summary><p>In the institution's AWS account, deployed from one CloudFormation template. The institution supplies its own Jack Henry consumer credentials and optional client certificate through Secrets Manager. There is no vendor-hosted service and no shared multi-tenant API.</p></details>
+  <details><summary>Why is a static egress IP needed?</summary><p>jXchange endpoints commonly allowlist source addresses. The template provisions a VPC, NAT gateway, and Elastic IP so the institution can whitelist a single stable address rather than a changing set of Lambda addresses.</p></details>
+  <details><summary>Is this an official Jack Henry product?</summary><p>No. It is an independent, community-maintained open-source template, not affiliated with or endorsed by Jack Henry &amp; Associates. Confirm schemas, credentials, and approvals with your institution and Jack Henry contacts.</p></details>
+  <details><summary>How do I contribute or report a problem?</summary><p>Open a GitHub issue with a minimal reproduction and sanitized logs, or send a pull request with a regression test. The maintainers have no Jack Henry tenant, so a real deployment report is more valuable than a speculative patch.</p></details>
+
+  <h2>Sister projects</h2>
+  <p>This gateway follows the runtime, deployment, and documentation conventions of the same author's other LOS middleware templates:</p>
+  <ul class="checks">
+    <li><a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">Encompass API Passthrough Middleware Gateway</a></li>
+    <li><a href="https://github.com/Spuds0588/MeridianLink-Mortgage-API-Passthrough-Middleware-Gateway">MeridianLink Mortgage API Passthrough Middleware Gateway</a></li>
+    <li><a href="https://github.com/Spuds0588/BytePro-Enterprise-Cloud-API-Passthrough-Middleware-Gateway">BytePro Enterprise Cloud API Passthrough Middleware Gateway</a></li>
+  </ul>
+
+  <h2>Community maintained</h2>
+  <p>This is shared infrastructure, not a paid product. Every real deployment is also a test, so issues and pull requests are the roadmap:</p>
+  <ul class="checks">
+    <li><a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/issues/new?template=bug_report.yml">File a bug</a> with a minimal reproduction, the commit you tested, and sanitized logs.</li>
+    <li><a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/issues/new?template=feature_improvement.yml">Request an improvement</a> — especially a real jXchange response shape we cannot see.</li>
+    <li><a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/pulls">Send a pull request</a> with a regression test and the docs updated in the same change.</li>
+    <li><a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/CONTRIBUTING.md">Read the contributing guide</a> before you start.</li>
+  </ul>
+  <p>Privately patched forks are discouraged: upstream the smallest fix so the next institution benefits. Never include API keys, invite codes, certificates, account numbers, or customer data in an issue, pull request, screenshot, or log.</p>
+</main>
+
+<footer class="wrap">
+  <p>MIT licensed. Independent project, not affiliated with or endorsed by Jack Henry &amp; Associates.</p>
+  <p>
+    <a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway">GitHub</a>
+    <a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/AGENTS.md">Agent directions</a>
+    <a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/CONTRIBUTING.md">Contributing</a>
+    <a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/llms.txt">llms.txt</a>
+    <a href="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/LICENSE">License</a>
+  </p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "jxchange-api-passthrough-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Serverless Jack Henry jXchange API passthrough & middleware gateway: SOAP/XML to JSON REST, persona masking, invite-scoped keys, static egress IP.",
+  "main": "src/lambda.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test test/",
+    "verify": "node scripts/build.js --check && node --test test/",
+    "verify:production": "node scripts/verify-production.js",
+    "dev": "node dev/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,555 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Jack Henry jXchange API passthrough gateway (SOAP to JSON reads, persona masking, invite portal, static egress IP, read-only).
+
+Parameters:
+  JxchangeEndpointUrl:
+    Type: String
+    MinLength: 8
+    AllowedPattern: ^https?://.+
+    Description: jXchange ServiceGateway URL supplied by the institution, e.g. https://jxchange.example.com/jxchange/2008/ServiceGateway/ServiceGateway.svc
+  InstRtId:
+    Type: String
+    MinLength: 9
+    MaxLength: 9
+    AllowedPattern: ^[0-9]{9}$
+    Description: Institution routing ID (InstRtId) issued by Jack Henry.
+  InstEnv:
+    Type: String
+    Default: PROD
+    AllowedValues: [TEST, PROD]
+    Description: jXchange InstEnv value for the endpoint.
+  CoreType:
+    Type: String
+    Default: SILVERLAKE
+    AllowedValues: [SILVERLAKE, SYMPITAR]
+    Description: Core behind jXchange. Reported to vendors as coreType.
+  ValidConsmName:
+    Type: String
+    MinLength: 1
+    Description: Bank-licensed ValidConsmName consumer credential.
+  ValidConsmProd:
+    Type: String
+    MinLength: 1
+    Description: Bank-licensed ValidConsmProd consumer product credential.
+  AuditUsrId:
+    Type: String
+    Default: API_GATEWAY
+    MinLength: 1
+    MaxLength: 40
+    Description: AuditUsrId recorded in the core audit log.
+  AuditWsId:
+    Type: String
+    Default: AWS_GATEWAY
+    MinLength: 1
+    MaxLength: 40
+    Description: AuditWsId recorded in the core audit log.
+  ClientCertBase64:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional base64 client certificate for mTLS (openssl base64 -A -in cert.pem).
+  ClientKeyBase64:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional base64 client private key for mTLS (openssl base64 -A -in key.pem).
+  InviteVerification:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for role=verification.
+  InviteLending:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for role=lending.
+  InviteAggregation:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for role=aggregation.
+  DefaultAcctType:
+    Type: String
+    Default: D
+    MinLength: 1
+    MaxLength: 4
+    Description: Default jXchange AcctType when a vendor omits ?type=.
+  LogRetentionInDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 3653
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.44.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.44.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.44.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Gateway Lambda egress only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  JxchangeSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/jxchange-core"
+      SecretString: !Sub |
+        {
+          "endpointUrl": "${JxchangeEndpointUrl}",
+          "instRtId": "${InstRtId}",
+          "instEnv": "${InstEnv}",
+          "coreType": "${CoreType}",
+          "validConsmName": "${ValidConsmName}",
+          "validConsmProd": "${ValidConsmProd}",
+          "auditUsrId": "${AuditUsrId}",
+          "auditWsId": "${AuditWsId}",
+          "clientCertBase64": "${ClientCertBase64}",
+          "clientKeyBase64": "${ClientKeyBase64}"
+        }
+
+  TenantsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: apiKeyId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: apiKeyId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: gateway-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt TenantsTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref JxchangeSecret
+              - Effect: Allow
+                Action: apigateway:POST
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apikeys"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans/${UsagePlan}/keys"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-gateway:*"
+
+  GatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-gateway"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  GatewayFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-gateway"
+      Description: jXchange SOAP to JSON read gateway
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 29
+      Role: !GetAtt GatewayRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          TENANT_TABLE: !Ref TenantsTable
+          JXCHANGE_SECRET_ARN: !Ref JxchangeSecret
+          USAGE_PLAN_ID: !Ref UsagePlan
+          CORE_TYPE: !Ref CoreType
+          DEFAULT_ACCT_TYPE: !Ref DefaultAcctType
+          INVITE_VERIFICATION: !Ref InviteVerification
+          INVITE_LENDING: !Ref InviteLending
+          INVITE_AGGREGATION: !Ref InviteAggregation
+          UPSTREAM_TIMEOUT_MS: "8000"
+      Code:
+        ZipFile: |
+         "use strict";const __nativeRequire=require;const __defs={"lambda.js":(module,exports,require)=>{const{createApp}=require("./app");const{createJxchange,decodeSecret}=require("./jxchange");function createHandler({store,env=process.env,core,now=()=>Date.now()}){let client=core||null;const getCore=async()=>{if(!client){const secret=decodeSecret(await store.getSecret());client=createJxchange({...secret,coreType:env.CORE_TYPE||secret.coreType,timeoutMs:env.UPSTREAM_TIMEOUT_MS});}return client;};const lazyCore={accountInquiry:async(params)=>(await getCore()).accountInquiry(params),accountHistory:async(params)=>(await getCore()).accountHistory(params),customerInquiry:async(params)=>(await getCore()).customerInquiry(params)};const app=createApp({store,core:lazyCore,env,now});return async function handler(event={},context){return app.handle(event,context);};}let defaultHandler=null;exports.handler=async(event,context)=>{if(!defaultHandler){const{createAwsStore}=require("./aws-store");defaultHandler=createHandler({store:createAwsStore(process.env)});}return defaultHandler(event,context);};exports.createHandler=createHandler;},"app.js":(module,exports,require)=>{const{log}=require("./log");const{mask,ALLOWLISTS}=require("./mask");const{roleFor,safeEqual}=require("./roles");const{renderPortal}=require("./portal");const{faultOf,parseAccount,parseHistory,parseCustomer}=require("./jxchange");const MAX_LIMIT=100;const DEFAULT_LIMIT=25;const ID=/^[A-Za-z0-9._:-]{1,40}$/;const ACCT_TYPE=/^[A-Za-z]{1,4}$/;const DATE=/^\d{4}-\d{2}-\d{2}$/;const REPO="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway";const json=(statusCode,body,headers={})=>({statusCode,headers:{"Content-Type":"application/json","Cache-Control":"no-store",...headers},body:JSON.stringify(body)});const error=(statusCode,message,extra={})=>json(statusCode,{error:message,...extra});const html=(statusCode,body)=>({statusCode,headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'","X-Frame-Options":"DENY"},body});const OPERATIONS=[{method:"GET",path:"/v1/accounts/{accountId}?type=D",jxchange:"AcctInq",description:"Account status and balances"},{method:"GET",path:"/v1/accounts/{accountId}/transactions?type=D&limit=25",jxchange:"AcctHistSrch",description:"Posted transaction history"},{method:"GET",path:"/v1/customers/{customerId}",jxchange:"CustInq",description:"Customer name and address on file"}];const ref=(id)=>(String(id).length>4?`***${String(id).slice(-4)}`:"***");const decode=(value)=>{try{return decodeURIComponent(value);}catch{return value;}};const coreFault=(fault,details)=>{log("WARN","SOAP_FAULT_INTERCEPTED",{...details,code:fault.code,message:fault.message});if(/not found|no account|no customer|does not exist|invalid account/i.test(fault.message))return error(404,"Record not found");if(/consumer|credential|authoriz|authentic|validconsm/i.test(fault.message))return error(502,"Core rejected gateway credentials",{code:fault.code});return error(400,"Core rejected the request",{code:fault.code});};function createApp({store,core,env=process.env,now=()=>Date.now()}){if(!store)throw new Error("createApp requires a store");if(!core)throw new Error("createApp requires a core client");const tenantFor=async(apiKeyId)=>(apiKeyId?(await store.getTenant(apiKeyId))||null:null);const can=(persona,path)=>Boolean(ALLOWLISTS[persona]?.includes(path));const accountTypeOf=(event)=>{const type=String(event.queryStringParameters?.type||env.DEFAULT_ACCT_TYPE||"D").trim();return ACCT_TYPE.test(type)?type:null;};const upstreamFailure=(err,operation,id)=>{log("ERROR","JXCHANGE_READ_FAILED",{operation,ref:ref(id),message:err.message,code:err.code||err.name});return error(err.name==="TimeoutError"||err.code==="ETIMEDOUT"?504:502,"Core banking request failed");};async function readAccount(event,apiKeyId,accountId){const tenant=await tenantFor(apiKeyId);if(!tenant)return error(403,"Unauthorized tenant mapping");const accountType=accountTypeOf(event);if(!accountType)return error(400,"query type must be a jXchange AcctType code (max 4 letters)");let upstream;try{upstream=await core.accountInquiry({accountId,accountType});}catch(err){return upstreamFailure(err,"AcctInq",accountId);}const fault=faultOf(upstream.body);if(fault)return coreFault(fault,{operation:"AcctInq",ref:ref(accountId)});if(upstream.statusCode>=300){log("ERROR","JXCHANGE_HTTP_ERROR",{operation:"AcctInq",statusCode:upstream.statusCode});return error(502,"Core banking request failed");}const masked=mask(parseAccount(upstream.body,{accountId,accountType,coreType:env.CORE_TYPE||"UNKNOWN"}),tenant.persona);if(!masked)return error(403,`Persona ${tenant.persona} has no schema allowlist`);log("INFO","SCHEMA_MASKING_APPLIED",{operation:"AcctInq",ref:ref(accountId),persona:tenant.persona});return json(200,masked);}async function readHistory(event,apiKeyId,accountId){const tenant=await tenantFor(apiKeyId);if(!tenant)return error(403,"Unauthorized tenant mapping");if(!can(tenant.persona,"transactions"))return error(403,`Persona ${tenant.persona} cannot read transactions`);const accountType=accountTypeOf(event);if(!accountType)return error(400,"query type must be a jXchange AcctType code (max 4 letters)");const rawLimit=event.queryStringParameters?.limit;const limit=rawLimit===undefined?DEFAULT_LIMIT:Number(rawLimit);if(!Number.isInteger(limit)||limit<1||limit>MAX_LIMIT)return error(400,`limit must be an integer from 1 to ${MAX_LIMIT}`);const startDt=event.queryStringParameters?.startDate||null;const endDt=event.queryStringParameters?.endDate||null;if((startDt&&!DATE.test(startDt))||(endDt&&!DATE.test(endDt)))return error(400,"startDate and endDate must be YYYY-MM-DD");let upstream;try{upstream=await core.accountHistory({accountId,accountType,limit,startDt,endDt});}catch(err){return upstreamFailure(err,"AcctHistSrch",accountId);}const fault=faultOf(upstream.body);if(fault)return coreFault(fault,{operation:"AcctHistSrch",ref:ref(accountId)});if(upstream.statusCode>=300){log("ERROR","JXCHANGE_HTTP_ERROR",{operation:"AcctHistSrch",statusCode:upstream.statusCode});return error(502,"Core banking request failed");}const masked=mask(parseHistory(upstream.body,{accountId}),tenant.persona);if(!masked)return error(403,`Persona ${tenant.persona} has no schema allowlist`);if(!Array.isArray(masked.transactions))return error(403,`Persona ${tenant.persona} cannot read transactions`);log("INFO","HISTORY_READ_COMPLETE",{ref:ref(accountId),count:masked.transactions.length,persona:tenant.persona});return json(200,masked);}async function readCustomer(apiKeyId,customerId){const tenant=await tenantFor(apiKeyId);if(!tenant)return error(403,"Unauthorized tenant mapping");if(!can(tenant.persona,"name"))return error(403,`Persona ${tenant.persona} cannot read customer demographics`);let upstream;try{upstream=await core.customerInquiry({customerId});}catch(err){return upstreamFailure(err,"CustInq",customerId);}const fault=faultOf(upstream.body);if(fault)return coreFault(fault,{operation:"CustInq",ref:ref(customerId)});if(upstream.statusCode>=300){log("ERROR","JXCHANGE_HTTP_ERROR",{operation:"CustInq",statusCode:upstream.statusCode});return error(502,"Core banking request failed");}const masked=mask(parseCustomer(upstream.body,{customerId}),tenant.persona);if(!masked)return error(403,`Persona ${tenant.persona} has no schema allowlist`);if(!masked.name?.full&&!masked.name?.last&&!masked.address?.street){return error(403,`Persona ${tenant.persona} cannot read customer demographics`);}log("INFO","CUSTOMER_READ_COMPLETE",{ref:ref(customerId),persona:tenant.persona});return json(200,masked);}async function provision(event,requestId){let payload;try{payload=JSON.parse(event.body||"");}catch{return error(400,"Invalid JSON body");}const role=String(payload?.role||"").trim().toLowerCase();const config=roleFor(env,role);if(!config||!safeEqual(String(payload?.code||""),config.code)){log("WARN","PORTAL_INVITE_REJECTED",{requestId,role:role||"unknown"});return error(403,"Invalid or expired invite link");}const tenantName=String(payload.tenantName||"").trim();const email=String(payload.email||"").trim();if(!tenantName||tenantName.length>100)return error(400,"tenantName is required (max 100 chars)");if(!email||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))return error(400,"A valid email is required");let key;try{key=await store.createApiKey({tenantName});await store.putTenant({apiKeyId:key.id,tenantName,email,role,persona:config.persona,status:"ACTIVE",createdAt:new Date(now()).toISOString()});}catch(err){log("ERROR","TENANT_PROVISION_FAILED",{tenantName,message:err.message});return error(503,"Key store unavailable");}log("INFO","TENANT_PROVISIONED",{tenantName,role,persona:config.persona,apiKeyId:key.id});return json(200,{message:"Tenant provisioned successfully",apiKey:key.value,tenantName,email,role,persona:config.persona});}async function handle(event={}){const method=String(event.httpMethod||event.requestContext?.http?.method||"GET").toUpperCase();const path=event.path||event.rawPath||"/";const requestId=event.requestContext?.requestId;const apiKeyId=event.requestContext?.identity?.apiKeyId;const started=now();log("INFO","REQUEST_RECEIVED",{requestId,method,path});try{if(method==="GET"&&path==="/health")return json(200,{status:"ok",system:"JXchangeGateway",mode:"read-only"});if(path==="/portal"){if(method==="POST")return await provision(event,requestId);if(method!=="GET")return error(405,"Method not allowed");const role=String(event.queryStringParameters?.role||"").trim().toLowerCase();const code=String(event.queryStringParameters?.code||"");if(!role&&!code)return html(200,renderPortal({repo:REPO}));const config=roleFor(env,role);if(!config||!safeEqual(code,config.code)){log("WARN","PORTAL_INVITE_REJECTED",{requestId,role:role||"unknown"});return html(403,renderPortal({repo:REPO,error:"This invite link is invalid or has expired."}));}return html(200,renderPortal({repo:REPO,role:config}));}let match;if(path==="/v1/operations"){if(method!=="GET")return error(405,"Method not allowed");if(!(await tenantFor(apiKeyId)))return error(403,"Unauthorized tenant mapping");return json(200,{operations:OPERATIONS,writes:"Not supported. This gateway is read-only by design."});}if((match=/^\/v1\/accounts\/([^/]+)\/transactions$/.exec(path))){if(method!=="GET")return error(405,"Method not allowed");return await readHistory(event,apiKeyId,decode(match[1]));}if((match=/^\/v1\/accounts\/([^/]+)$/.exec(path))){if(method!=="GET"){return error(method==="POST"||method==="PATCH"||method==="PUT"||method==="DELETE"?501:405,"This gateway is read-only");}return await readAccount(event,apiKeyId,decode(match[1]));}if((match=/^\/v1\/customers\/([^/]+)$/.exec(path))){if(method!=="GET")return error(405,"Method not allowed");return await readCustomer(apiKeyId,decode(match[1]));}return error(404,"Not found");}catch(err){log("ERROR","HANDLER_EXCEPTION",{requestId,method,path,message:err.message,stack:err.stack});return error(500,"Internal gateway error");}finally{log("INFO","REQUEST_COMPLETE",{requestId,method,path,durationMs:now()-started});}}return{handle};}module.exports={createApp,OPERATIONS};},"log.js":(module,exports,require)=>{const log=(level,action,details={})=>console.log(JSON.stringify({timestamp:new Date().toISOString(),system:"JXchangeGateway",level,action,...details}));module.exports={log};},"mask.js":(module,exports,require)=>{const ALLOWLISTS={ACCOUNT_VERIFICATION:["accountId","accountType","coreType","status","statusDescription","balances","currency","customerId","customerType","name","address"],LENDING_PARTNER:["accountId","accountType","coreType","status","statusDescription","balances","currency","customerId","customerType","name","address","transactions"],DATA_AGGREGATOR:["accountId","accountType","coreType","status","statusDescription","balances","currency","customerId","transactions"]};const get=(obj,path)=>path.split(".").reduce((node,key)=>(node==null?undefined:node[key]),obj);const set=(obj,path,value)=>{const keys=path.split(".");const leaf=keys.pop();const target=keys.reduce((node,key)=>(node[key]??={}),obj);target[leaf]=value;return obj;};const mask=(payload,persona)=>{const allow=ALLOWLISTS[persona];if(!allow)return null;return allow.filter((path)=>get(payload,path)!=null).reduce((out,path)=>set(out,path,get(payload,path)),{});};module.exports={mask,ALLOWLISTS};},"roles.js":(module,exports,require)=>{const{timingSafeEqual}=require("node:crypto");const ROLES={verification:{label:"Account verification",persona:"ACCOUNT_VERIFICATION",codeEnv:"INVITE_VERIFICATION"},lending:{label:"Lending partner",persona:"LENDING_PARTNER",codeEnv:"INVITE_LENDING"},aggregation:{label:"Data aggregator",persona:"DATA_AGGREGATOR",codeEnv:"INVITE_AGGREGATION"}};const safeEqual=(a,b)=>{const left=Buffer.from(String(a));const right=Buffer.from(String(b));return left.length===right.length&&timingSafeEqual(left,right);};const roleFor=(env,role)=>{const config=ROLES[role];const code=config&&env[config.codeEnv];return config&&code?{...config,role,code}:null;};module.exports={ROLES,roleFor,safeEqual};},"portal.js":(module,exports,require)=>{const escapeHtml=(value)=>String(value??"").replace(/[&<>"']/g,(char)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));const ROWS=[["Account status and balances","accountId, accountType, coreType, status, balances.current, balances.available, currency"],["Transaction history","accountId, transactions[].transactionId, postDate, amount, description, type"],["Customer on file","customerId, customerType, name.first, name.last, name.full, address.street, city, state, zip"]].map(([need,paths])=>`<tr><td>${need}</td><td><code>${paths}</code></td></tr>`).join("");const PERSONAS=[["Account verification","Balances, account status, customer name and address"],["Lending partner","Everything above plus posted transaction history"],["Data aggregator","Balances, status and transaction history, no customer name or address"]].map(([label,sees])=>`<tr><td>${label}</td><td>${sees}</td></tr>`).join("");const OPERATIONS=[["GET","/v1/accounts/{accountId}?type=D","AcctInq"],["GET","/v1/accounts/{accountId}/transactions?type=D&limit=25","AcctHistSrch"],["GET","/v1/customers/{customerId}","CustInq"],["GET","/v1/operations","catalog"]].map(([method,path,core])=>`<tr><td><code>${method}</code></td><td class="path">${path}</td><td><code>${core}</code></td></tr>`).join("");const errorBlock=(error)=>(error?`<div class="error" role="alert">${escapeHtml(error)}</div>`:"");const inviteBlock=(role)=>role?`<section class="invite">
+                  <span class="badge">${escapeHtml(role.label)}</span>
+                  <p class="hint">Persona locked to <code>${escapeHtml(role.persona)}</code> server-side. Every response is masked to it.</p>
+                </section>
+                <form id="form">
+                  <label for="tenantName">Company name</label>
+                  <input id="tenantName" type="text" maxlength="100" placeholder="e.g. Acme Verification" required>
+                  <label for="email">Developer email</label>
+                  <input id="email" type="email" maxlength="254" placeholder="dev@acme.test" required>
+                  <button id="submit" type="submit">Generate API key</button>
+                </form>`:`<div class="notice"><strong>Invite link required.</strong> Ask the bank for a role-scoped link such as <code>/portal?role=lending&amp;code=…</code>. The link fixes your persona and permissions.</div>`;function renderPortal({role,error,repo="https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway"}={}){return`<!DOCTYPE html>
+         <html lang="en">
+         <head>
+         <meta charset="UTF-8">
+         <meta name="viewport" content="width=device-width, initial-scale=1">
+         <title>jXchange Gateway Portal</title>
+         <style>
+           :root { color-scheme: dark; }
+           * { box-sizing: border-box; }
+           body { margin: 0; padding: 20px; background: #0b1220; color: #e2e8f0; font: 15px/1.55 system-ui, sans-serif; }
+           main { max-width: 880px; margin: auto; padding: 24px; background: #111c2e; border: 1px solid #1f3350; border-radius: 12px; }
+           h1 { margin: 0; font-size: 21px; }
+           h2 { margin: 22px 0 8px; font-size: 15px; }
+           p.sub, .hint { margin: 6px 0 16px; color: #93a5bf; font-size: 13px; }
+           label { display: block; margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; color: #93a5bf; }
+           input { width: 100%; padding: 9px 10px; border: 1px solid #1f3350; border-radius: 8px; background: #0b1220; color: #f8fafc; font: inherit; }
+           button { margin-top: 14px; padding: 9px 12px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+           .hidden { display: none; }
+           .error { margin-top: 14px; padding: 9px 11px; border-radius: 8px; background: #450a0a; color: #fecaca; font-size: 13px; }
+           .notice, .ok, .invite { margin: 14px 0; padding: 12px; background: #0b1220; border: 1px solid #1f3350; border-radius: 8px; font-size: 13px; }
+           .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #1e3a8a; color: #bfdbfe; font-size: 11px; text-transform: uppercase; }
+           .keyrow { display: flex; gap: 8px; margin-bottom: 12px; }
+           .keyrow button { width: auto; margin: 0; }
+           pre { margin: 0 0 4px; padding: 10px; overflow-x: auto; background: #020617; border-radius: 8px; font-size: 12px; }
+           a { color: #93c5fd; font-size: 12px; }
+           .table-wrap { overflow-x: auto; margin-bottom: 8px; }
+           table { width: 100%; border-collapse: collapse; font-size: 12px; }
+           th, td { padding: 7px 9px; text-align: left; border-bottom: 1px solid #1b2b45; }
+           th { color: #93a5bf; font-size: 11px; text-transform: uppercase; }
+           td.path, code, pre { font-family: ui-monospace, Menlo, monospace; }
+           code { padding: 1px 4px; background: #020617; border-radius: 4px; color: #c7d2fe; }
+         </style>
+         </head>
+         <body>
+         <main>
+           <h1>jXchange Gateway</h1>
+           <p class="sub">JSON REST access to a Jack Henry core. Your invite link fixes your persona and the data your key can return.</p>
+           ${errorBlock(error)}
+           ${inviteBlock(role)}
+           <div id="error" class="error hidden" role="alert"></div>
+           <section id="result" class="ok hidden">
+             <h2>Key provisioned successfully</h2>
+             <p class="hint">Copy this key now. It is not stored in plaintext and will not be shown again.</p>
+             <div class="keyrow"><input id="apiKey" readonly><button id="copy" type="button">Copy</button></div>
+             <label>Endpoints</label>
+             <pre id="endpoints"></pre>
+             <label for="curl">Verification cURL</label>
+             <pre id="curl"></pre>
+             <p><a href="#" id="again">Generate another key with this invite</a></p>
+           </section>
+           <section>
+             <h2>Endpoints for this deployment</h2>
+             <div class="table-wrap"><table><thead><tr><th>Method</th><th>Path</th><th>jXchange operation</th></tr></thead><tbody>${OPERATIONS}</tbody></table></div>
+             <p class="hint">Send <code>x-api-key</code>. Responses are normalized JSON; nothing is stored at rest. This gateway is read-only.</p>
+             <h2>Response fields</h2>
+             <div class="table-wrap"><table><thead><tr><th>Need</th><th>JSON paths</th></tr></thead><tbody>${ROWS}</tbody></table></div>
+             <h2>Personas</h2>
+             <div class="table-wrap"><table><thead><tr><th>Role</th><th>Sees</th></tr></thead><tbody>${PERSONAS}</tbody></table></div>
+             <p class="hint">Unknown core status codes are returned as-is. Resolve them with jXchange <code>SvcDictSrch</code>; the gateway does not translate core dictionaries. Found a gap? <a href="${escapeHtml(repo)}/issues/new?template=bug_report.yml">Open an issue</a> or <a href="${escapeHtml(repo)}/pulls">send a pull request</a>.</p>
+           </section>
+         </main>
+         <script>
+           const $ = (id) => document.getElementById(id);
+           const show = (id) => $(id).classList.remove("hidden");
+           const hide = (id) => $(id).classList.add("hidden");
+           const form = $("form");
+           if (form) {
+             form.addEventListener("submit", async (event) => {
+               event.preventDefault();
+               hide("error");
+               const params = new URLSearchParams(location.search);
+               const tenantName = $("tenantName").value.trim();
+               const email = $("email").value.trim();
+               if (!tenantName || !email) {
+                 $("error").textContent = "Company name and developer email are required.";
+                 return show("error");
+               }
+               const button = $("submit");
+               button.disabled = true;
+               button.textContent = "Generating...";
+               try {
+                 const response = await fetch(location.pathname, {
+                   method: "POST",
+                   headers: { "Content-Type": "application/json" },
+                   body: JSON.stringify({ tenantName, email, role: params.get("role"), code: params.get("code") })
+                 });
+                 const data = await response.json().catch(() => ({}));
+                 if (!response.ok) throw new Error(data.error || "Provisioning failed");
+                 $("apiKey").value = data.apiKey;
+                 $("endpoints").textContent = [
+                   location.origin + "/v1/accounts/{accountId}?type=D",
+                   location.origin + "/v1/accounts/{accountId}/transactions?type=D",
+                   location.origin + "/v1/customers/{customerId}",
+                   location.origin + "/v1/operations"
+                 ].join(String.fromCharCode(10));
+                 $("curl").textContent = 'curl -s "' + location.origin + '/v1/accounts/123456789?type=D" -H "x-api-key: ' + data.apiKey + '"';
+                 show("result");
+               } catch (err) {
+                 $("error").textContent = err.message;
+                 show("error");
+               } finally {
+                 button.disabled = false;
+                 button.textContent = "Generate API key";
+               }
+             });
+             $("copy").addEventListener("click", async () => {
+               await navigator.clipboard?.writeText($("apiKey").value);
+               $("copy").textContent = "Copied";
+             });
+             $("again").addEventListener("click", (event) => {
+               event.preventDefault();
+               hide("result");
+               form.reset();
+             });
+           }
+         </script>
+         </body>
+         </html>`;}module.exports={renderPortal};},"jxchange.js":(module,exports,require)=>{const http=require("node:http");const https=require("node:https");const{escapeXml,parse,first,findAll,text,value}=require("./xml");const{log}=require("./log");const NS="http://jackhenry.com/jxchange/TPG/2008";const OPERATIONS={AcctInq:"AcctInq",AcctHistSrch:"AcctHistSrch",CustInq:"CustInq"};const amount=(raw)=>{const parsed=Number.parseFloat(String(raw??"").replace(/,/g,""));return Number.isFinite(parsed)?parsed:null;};const decodeSecret=(secret={})=>({...secret,clientCertPem:secret.clientCertBase64?Buffer.from(secret.clientCertBase64,"base64").toString("utf8"):secret.clientCertPem,clientKeyPem:secret.clientKeyBase64?Buffer.from(secret.clientKeyBase64,"base64").toString("utf8"):secret.clientKeyPem});const headerXml=(config)=>`<jXchangeHdr>
+         <JxVer/><AuditUsrId>${escapeXml(config.auditUsrId)}</AuditUsrId><AuditWsId>${escapeXml(config.auditWsId || "AWS_GATEWAY")}</AuditWsId>
+         <AuthenUsrId/><ConsumerName/><ConsumerProd/><Ver_1/><jXLogTrackingId/><Ver_2/>
+         <InstRtId>${escapeXml(config.instRtId)}</InstRtId><InstEnv>${escapeXml(config.instEnv || "PROD")}</InstEnv><Ver_3/>
+         <BusCorrelId/><Ver_4/><WorkflowCorrelId/><Ver_5/>
+         <ValidConsmName>${escapeXml(config.validConsmName)}</ValidConsmName><ValidConsmProd>${escapeXml(config.validConsmProd)}</ValidConsmProd><Ver_6/>
+         </jXchangeHdr>`;const buildEnvelope=(config,operation,body,headerName="MsgRqHdr",extraHeader="")=>{if(!OPERATIONS[operation])throw new Error(`Unsupported jXchange operation: ${operation}`);return`<?xml version="1.0" encoding="UTF-8"?>
+         <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Header/><soapenv:Body>
+         <jx:${operation} xmlns:jx="${NS}" xmlns="${NS}">
+         <${headerName}>${headerXml(config)}${extraHeader}</${headerName}>${body}
+         </jx:${operation}>
+         </soapenv:Body></soapenv:Envelope>`;};const accountBlock=(accountId,accountType)=>`<InAcctId><AcctId>${escapeXml(accountId)}</AcctId><AcctType>${escapeXml(accountType)}</AcctType></InAcctId>`;const bodies={AcctInq:({accountId,accountType})=>({body:accountBlock(accountId,accountType)}),AcctHistSrch:({accountId,accountType,limit,startDt,endDt})=>({headerName:"SrchMsgRqHdr",extraHeader:`<MaxRec>${escapeXml(limit)}</MaxRec>`,body:`${accountBlock(accountId, accountType)}${startDt ? `<StartDt>${escapeXml(startDt)}</StartDt>` : ""}${endDt ? `<EndDt>${escapeXml(endDt)}</EndDt>` : ""}`}),CustInq:({customerId})=>({body:`<CustId>${escapeXml(customerId)}</CustId>`})};function post(config,agent,operation,envelope){const url=new URL(config.endpointUrl);const secure=url.protocol==="https:";const started=Date.now();return new Promise((resolve,reject)=>{const request=(secure?https:http).request({method:"POST",hostname:url.hostname,port:url.port||(secure?443:80),path:url.pathname+url.search,agent:secure?agent:undefined,headers:{"Content-Type":"text/xml; charset=utf-8",SOAPAction:`"http://jackhenry.com/ws/${operation}"`,"Content-Length":Buffer.byteLength(envelope)}},(response)=>{let body="";response.setEncoding("utf8");response.on("data",(chunk)=>(body+=chunk));response.on("end",()=>{log("INFO","SOAP_RESPONSE_RECEIVED",{operation,statusCode:response.statusCode,durationMs:Date.now()-started,bytes:body.length});resolve({statusCode:response.statusCode,body});});});request.setTimeout(Number(config.timeoutMs)||8000,()=>request.destroy(Object.assign(new Error("Upstream timeout"),{name:"TimeoutError"})));request.on("error",(err)=>{log("WARN",err.code&&/CERT|TLS|SSL/i.test(err.code)?"MTLS_HANDSHAKE_ERROR":"JXCHANGE_EGRESS_FAILED",{operation,code:err.code||err.name,message:err.message});reject(err);});log("INFO","JXCHANGE_EGRESS_INIT",{operation,host:url.hostname});request.end(envelope);});}function createJxchange(config){if(!config?.endpointUrl)throw new Error("createJxchange requires endpointUrl");const agent=config.clientCertPem?new https.Agent({cert:config.clientCertPem,key:config.clientKeyPem,keepAlive:true,rejectUnauthorized:true}):undefined;const send=async(operation,params)=>{const draft=bodies[operation](params);const envelope=buildEnvelope(config,operation,draft.body,draft.headerName,draft.extraHeader);log("INFO","SOAP_REQUEST_DISPATCHED",{operation,accountType:params.accountType});return{...(await post(config,agent,operation,envelope)),operation};};return{accountInquiry:(params)=>send("AcctInq",params),accountHistory:(params)=>send("AcctHistSrch",params),customerInquiry:(params)=>send("CustInq",params)};}const tree=(xml)=>(typeof xml==="string"?parse(xml):xml);const faultOf=(xml)=>{const fault=first(tree(xml),"Fault");if(!fault)return null;return{code:value(fault,"ErrCode")||value(fault,"faultcode")||"SOAP_FAULT",message:value(fault,"faultstring")||value(fault,"ErrDesc")||"jXchange fault"};};const parseAccount=(xml,{accountId,accountType,coreType})=>{const root=tree(xml);const rec=first(root,"AcctInqResponse")||root;return{accountId:value(rec,"AcctId")||accountId,accountType:value(rec,"AcctType")||accountType,coreType,status:value(rec,"AcctStat"),statusDescription:value(rec,"AcctStatDesc"),balances:{current:amount(value(rec,"CurBal")),available:amount(value(rec,"AvlBal")??value(rec,"AvailBal"))},currency:"USD"};};const parseHistory=(xml,{accountId})=>{const transactions=findAll(tree(xml),"AcctHistSrchRec").map((record)=>{const entry=first(record,"DepHistSrchRec")||first(record,"LnHistSrchRec")||record;return{transactionId:value(entry,"HistRecId")||value(entry,"EFTTrnId")||value(entry,"SeqNum"),postDate:value(entry,"PostDt")||value(entry,"EffDt"),amount:amount(value(entry,"Amt")),description:value(entry,"TrnCodeDesc")||value(entry,"TrnStmtDesc")||value(entry,"SrcCodeDesc")||value(entry,"ACHCompEntryDesc"),type:value(entry,"TrnType")};});return{accountId,transactions};};const parseCustomer=(xml,{customerId})=>{const root=tree(xml);const rec=first(root,"CustInqRec")||root;const person=first(rec,"PersonName");const addr=first(rec,"Addr")||first(rec,"AddrArray");const name={first:value(person,"FirstName"),last:value(person,"LastName"),full:value(person,"ComName")||text(person)};return{customerId:value(rec,"CustId")||customerId,customerType:value(rec,"CustType")||(name.full?"Business":"Individual"),name:{first:name.first,last:name.last,full:name.full},address:{street:value(addr,"AddrLine1"),city:value(addr,"City"),state:value(addr,"State"),zip:value(addr,"PostalCode")}};};module.exports={createJxchange,decodeSecret,buildEnvelope,faultOf,parseAccount,parseHistory,parseCustomer,soapAction:(op)=>`http://jackhenry.com/ws/${op}`};},"xml.js":(module,exports,require)=>{const ENTITIES={lt:"<",gt:">",amp:"&",quot:'"',apos:"'"};const TAG=/<(\/?)([A-Za-z_][\w.:-]*)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>|<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<![A-Za-z][^>]*>/g;const ATTR=/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;const decode=(text)=>String(text).replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi,(match,code)=>{if(code[0]==="#"){const hex=code[1]==="x"||code[1]==="X";return String.fromCodePoint(parseInt(hex?code.slice(2):code.slice(1),hex?16:10));}return ENTITIES[code.toLowerCase()]??match;});const escapeXml=(value)=>String(value??"").replace(/[<>&'"]/g,(char)=>({"<":"&lt;",">":"&gt;","&":"&amp;","'":"&apos;",'"':"&quot;"}[char]));const local=(name)=>name.split(":").pop();function parse(xml){const root={name:"#document",local:"#document",attrs:{},children:[],text:""};const stack=[root];let last=0;let match;TAG.lastIndex=0;while((match=TAG.exec(String(xml)))){const text=String(xml).slice(last,match.index);if(text.trim())stack[stack.length-1].text+=text;last=TAG.lastIndex;if(match[5]!==undefined){stack[stack.length-1].text+=match[5];continue;}if(!match[2])continue;if(match[1]==="/"){if(stack.length>1)stack.pop();continue;}const attrs={};for(const attr of match[3].matchAll(ATTR))attrs[local(attr[1])]=decode(attr[2]??attr[3]??"");const node={name:match[2],local:local(match[2]),attrs,children:[],text:""};stack[stack.length-1].children.push(node);if(!match[4])stack.push(node);}return root;}const findAll=(node,name,out=[])=>{for(const child of node?.children||[]){if(child.local===name)out.push(child);findAll(child,name,out);}return out;};const first=(node,name)=>findAll(node,name)[0]||null;const text=(node)=>(node?decode(node.text).trim()||null:null);const value=(node,name)=>text(first(node,name));module.exports={parse,findAll,first,text,value,escapeXml,decode};},"aws-store.js":(module,exports,require)=>{const{SecretsManagerClient,GetSecretValueCommand}=require("@aws-sdk/client-secrets-manager");const{DynamoDBClient}=require("@aws-sdk/client-dynamodb");const{DynamoDBDocumentClient,GetCommand,PutCommand}=require("@aws-sdk/lib-dynamodb");const{APIGatewayClient,CreateApiKeyCommand,CreateUsagePlanKeyCommand}=require("@aws-sdk/client-api-gateway");function createAwsStore(env=process.env){const secrets=new SecretsManagerClient({});const ddb=DynamoDBDocumentClient.from(new DynamoDBClient({}));const apigw=new APIGatewayClient({});let cachedSecret=null;return{async getSecret(){if(!cachedSecret){const result=await secrets.send(new GetSecretValueCommand({SecretId:env.JXCHANGE_SECRET_ARN}));cachedSecret=JSON.parse(result.SecretString);}return cachedSecret;},async getTenant(apiKeyId){const result=await ddb.send(new GetCommand({TableName:env.TENANT_TABLE,Key:{apiKeyId}}));return result.Item||null;},async putTenant(tenant){await ddb.send(new PutCommand({TableName:env.TENANT_TABLE,Item:tenant}));return tenant;},async createApiKey({tenantName}){const key=await apigw.send(new CreateApiKeyCommand({name:`${tenantName}-${Date.now()}`.slice(0,100),enabled:true}));if(env.USAGE_PLAN_ID){await apigw.send(new CreateUsagePlanKeyCommand({usagePlanId:env.USAGE_PLAN_ID,keyId:key.id,keyType:"API_KEY"}));}return{id:key.id,value:key.value};}};}module.exports={createAwsStore};},};const __cache={};function __require(id){if(__cache[id])return __cache[id].exports;if(!__defs[id])throw new Error("Module not bundled: "+id);const module=(__cache[id]={exports:{}});__defs[id](module,module.exports,(spec)=>spec.startsWith(".")?__require(spec.replace(/^\.\//,"").replace(/\.js$/,"")+".js"):__nativeRequire(spec));return module.exports;}module.exports=__require("lambda.js");
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  PortalResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: portal
+
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: health
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: "{proxy+}"
+
+  PortalGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref PortalResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  PortalPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref PortalResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  HealthGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  ProxyAny:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PortalGet
+      - PortalPost
+      - HealthGet
+      - ProxyAny
+    Properties:
+      RestApiId: !Ref Api
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      Description: Vendor usage plan (rate limit and daily quota)
+      ApiStages:
+        - ApiId: !Ref Api
+          Stage: !Ref ApiStage
+      Throttle:
+        RateLimit: 50
+        BurstLimit: 100
+      Quota:
+        Limit: 100000
+        Period: DAY
+
+  ApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GatewayFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/*"
+
+Outputs:
+  GatewayUrl:
+    Description: Base URL for vendor API calls.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  AdminPortalUrl:
+    Description: Role-invite API key portal.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/portal"
+  HealthUrl:
+    Description: Unauthenticated health check.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/health"
+  OperationsUrl:
+    Description: Authenticated catalog of supported read operations.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/operations"
+  StaticEgressIp:
+    Description: Whitelist this IP with Jack Henry for the jXchange endpoint.
+    Value: !Ref NatEip
+  CoreSecretArn:
+    Description: Secrets Manager ARN holding the jXchange consumer credentials and optional mTLS material.
+    Value: !Ref JxchangeSecret

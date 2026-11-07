@@ -1,0 +1,28 @@
+<AcctInqResponse xmlns="http://jackhenry.com/jxchange/TPG/2008">
+  <MsgRsHdr>
+    <jXchangeHdr>
+      <JxVer>R2024.1</JxVer>
+      <AuditUsrId>API_GATEWAY</AuditUsrId>
+      <AuditWsId>AWS_GATEWAY</AuditWsId>
+      <InstRtId>011001276</InstRtId>
+      <InstEnv>TEST</InstEnv>
+    </jXchangeHdr>
+  </MsgRsHdr>
+  <DepAcctInqRec>
+    <DepInfoRec>
+      <AcctStat>1</AcctStat>
+      <AcctStatDesc>Active</AcctStatDesc>
+      <CurBal>{{CUR_BAL}}</CurBal>
+      <AvlBal>{{AVL_BAL}}</AvlBal>
+      <ProdCode>10</ProdCode>
+      <BrCode>1</BrCode>
+    </DepInfoRec>
+    <DepAcctId>
+      <AcctId>{{ACCT_ID}}</AcctId>
+      <AcctType>{{ACCT_TYPE}}</AcctType>
+    </DepAcctId>
+    <PersonName>
+      <ComName>Jane Doe</ComName>
+    </PersonName>
+  </DepAcctInqRec>
+</AcctInqResponse>

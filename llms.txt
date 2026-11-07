@@ -1,0 +1,82 @@
+# jXchange API Passthrough & Middleware Gateway
+
+> A community-supported, open-source AWS middleware template for Jack Henry jXchange. It turns jXchange SOAP/XML into JSON REST reads for Silverlake and Symitar cores, applies deny-by-default persona masking, issues invite-scoped API keys, and provides a static egress IP for the Jack Henry firewall allowlist. It is read-only and stores no account payloads. It is not affiliated with or endorsed by Jack Henry & Associates.
+
+The maintainers have no Jack Henry access and no AWS account for this project, so real-world validation is a shared community responsibility. Reproducible bugs, sanitized SOAP shapes, and upstream fixes belong in GitHub issues and pull requests. This project only improves when deployments report back.
+
+## Canonical resources
+
+- [Project landing page](https://spuds0588.github.io/jXchange-API-Passthrough-Middleware-Gateway/): overview, API summary, FAQ, and community expectations.
+- [README](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/README.md): deployment, API, security, and known limitations.
+- [Agent directions](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/AGENTS.md): operating manual for coding agents and maintainers.
+- [Contributing guide](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/CONTRIBUTING.md): bug reports, pull requests, tests, and redaction rules.
+- [Issue forms](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/issues/new/choose): guided bug report and improvement forms.
+- [Pull request template](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/.github/pull_request_template.md): verified-vs-unverified disclosure and a regression-test requirement.
+- [Source code](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway): handler, template, tests, installer, and local fake core.
+- [Open issues](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/issues) and [pull requests](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/pulls).
+- [License](https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/LICENSE): MIT.
+
+## What it does
+
+- Deploys one self-contained AWS Lambda behind API Gateway, with DynamoDB, Secrets Manager, a VPC, a NAT gateway, a static Elastic IP, and one CloudFormation template under the 51,200-byte direct-upload limit.
+- Translates JSON REST reads into jXchange SOAP 1.1 envelopes with the institution's `ValidConsmName`, `ValidConsmProd`, `InstRtId`, `InstEnv`, `AuditUsrId`, and `AuditWsId`.
+- Calls the core over HTTPS with optional mTLS client certificates held in Secrets Manager.
+- Normalizes `AcctInq`, `AcctHistSrch`, and `CustInq` responses into small JSON contracts.
+- Masks responses with deny-by-default persona allowlists: `ACCOUNT_VERIFICATION`, `LENDING_PARTNER`, `DATA_AGGREGATOR`. Unknown personas fail closed.
+- Provisions API keys through role-scoped invite links (`verification`, `lending`, `aggregation`). The server chooses the persona; clients cannot widen it.
+- Proxies nothing else. There are no write endpoints: `POST`, `PATCH`, `PUT`, and `DELETE` return `501` because money movement and record changes need a separate reviewed design.
+
+## API surface
+
+- `GET /health`
+- `GET /portal` and `GET /portal?role=lending&code=...`
+- `POST /portal` with `role`, `code`, `tenantName`, `email`
+- `GET /v1/accounts/{accountId}?type=D` → `AcctInq`
+- `GET /v1/accounts/{accountId}/transactions?type=D&limit=25&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` → `AcctHistSrch`
+- `GET /v1/customers/{customerId}` → `CustInq`
+- `GET /v1/operations`
+
+All `/v1/*` routes require `x-api-key`; the portal and health check are the only unauthenticated HTTP routes. Account, history, and customer reads are capped at 100 records. Account and customer identifiers are validated before any SOAP call.
+
+## Deploy and verify locally
+
+- One-line installer: `bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/main/deploy.sh)`
+- Local gateway with a fake jXchange core: `npm run dev`
+- Tests and template sync: `npm run verify`
+- Regenerate the committed CloudFormation artifact after `src/` or `infra/` changes: `npm run build`
+- No npm runtime dependencies are used. CI covers Node 20 and Node 24; the Lambda runtime is Node.js 20.
+- `test/bundle.test.js` extracts the inline Lambda code from `template.yaml` and executes it. That proves the deployable artifact, not AWS resources.
+
+## Community contract
+
+- This project is shared infrastructure, not a paid supported product. If you deploy it, you are part of the testing community.
+- **Found a bug?** Open a GitHub issue with a minimal reproduction, the commit you tested, and sanitized logs.
+- **Fixed something?** Open a pull request with a regression test and the docs updated.
+- **Validated a SOAP shape?** Contribute a sanitized fixture so the suite covers it.
+- **Deployed successfully?** Report the sanitized result on the relevant issue. That evidence is more valuable than a speculative patch.
+- **Want to keep going?** Say so on your issue or pull request and you will be added as a contributor.
+- Privately patched forks are discouraged: upstream the smallest fix so the next institution benefits.
+- If a fix cannot be contributed, state explicitly why.
+- Never include API keys, invite codes, certificates, account numbers, customer data, or full upstream payloads in an issue, pull request, screenshot, log, test, or generated page.
+- Do not claim live Jack Henry or AWS verification that did not happen.
+- Keep `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, this file, `index.html`, `todo.md`, and `history.md` in sync when behavior changes.
+
+## Instructions for coding agents
+
+1. Read `AGENTS.md` and `CONTRIBUTING.md` before changing code.
+2. Do not invent Jack Henry endpoints, operation names, or SOAP element shapes. The current names come from the published jXchange reference; extend `mock/jxchange.js` and `fixtures/` for tests and ask for a sanitized real shape in an issue if one is missing.
+3. Reproduce the bug with the smallest failing test first, then change the handler. Never weaken an assertion to make CI pass.
+4. Run `npm run verify` before proposing a change. If `src/` or `infra/template.yaml` changed, run `npm run build` first so `template.yaml` stays in sync.
+5. If behavior, API, deployment, or security changes, update `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `index.html`, and this file in the same change, and tick `todo.md` while appending to `history.md`.
+6. Open a GitHub issue for anything you cannot verify locally (a real core, a real stack, an mTLS handshake). Submit the fix as a pull request when you can; if you cannot, say so explicitly.
+7. Prefer the smallest upstream change. Do not add dependencies, speculative endpoints, or configuration knobs to work around a reportable defect.
+8. Leave the dev environment clean: stop servers, remove `dist/` and scratch files, and confirm no processes survive. This machine has limited memory.
+
+## Verification status and limitations
+
+- Verified locally and in CI: XML parsing, SOAP envelope construction and escaping, SoapAction values, secret decoding, response normalization for all three reads, invite validation and persona locking, persona masking and refusals, identifier and limit validation, fault mapping, transport-failure mapping, the read-only refusal, the inline deployable bundle, the CloudFormation template guards, and the GitHub Pages page.
+- Not verified by the maintainers: a real CloudFormation deployment, API Gateway key creation and usage-plan enforcement, DynamoDB and Secrets Manager behavior, a live jXchange authentication and mTLS handshake, and real response shapes for any institution. AWS deployment is blocked on account credentials and Jack Henry is not accessible from this environment.
+- The local fake returns fixtures built from the published jXchange reference. Real cores vary by release, core, and institution configuration; `AcctStat`, `TrnType`, and `AcctType` are canonical codes and are returned untranslated.
+- No per-account organization scoping: a key is limited by persona, not by which accounts it may request. Any valid key can query any account ID the shared consumer credential can reach.
+- Known limits: one shared usage plan, global per-role invite codes, no revocation UI, no CORS, no admin dashboard, no writes, no statement documents, and currency is assumed to be USD.
+- The landing page is served from GitHub Pages. The API is deployed separately into each institution's AWS account.

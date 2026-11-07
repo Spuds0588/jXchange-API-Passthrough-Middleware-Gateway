@@ -1,0 +1,417 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Jack Henry jXchange API passthrough gateway (SOAP to JSON reads, persona masking, invite portal, static egress IP, read-only).
+
+Parameters:
+  JxchangeEndpointUrl:
+    Type: String
+    MinLength: 8
+    AllowedPattern: ^https?://.+
+    Description: jXchange ServiceGateway URL supplied by the institution, e.g. https://jxchange.example.com/jxchange/2008/ServiceGateway/ServiceGateway.svc
+  InstRtId:
+    Type: String
+    MinLength: 9
+    MaxLength: 9
+    AllowedPattern: ^[0-9]{9}$
+    Description: Institution routing ID (InstRtId) issued by Jack Henry.
+  InstEnv:
+    Type: String
+    Default: PROD
+    AllowedValues: [TEST, PROD]
+    Description: jXchange InstEnv value for the endpoint.
+  CoreType:
+    Type: String
+    Default: SILVERLAKE
+    AllowedValues: [SILVERLAKE, SYMPITAR]
+    Description: Core behind jXchange. Reported to vendors as coreType.
+  ValidConsmName:
+    Type: String
+    MinLength: 1
+    Description: Bank-licensed ValidConsmName consumer credential.
+  ValidConsmProd:
+    Type: String
+    MinLength: 1
+    Description: Bank-licensed ValidConsmProd consumer product credential.
+  AuditUsrId:
+    Type: String
+    Default: API_GATEWAY
+    MinLength: 1
+    MaxLength: 40
+    Description: AuditUsrId recorded in the core audit log.
+  AuditWsId:
+    Type: String
+    Default: AWS_GATEWAY
+    MinLength: 1
+    MaxLength: 40
+    Description: AuditWsId recorded in the core audit log.
+  ClientCertBase64:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional base64 client certificate for mTLS (openssl base64 -A -in cert.pem).
+  ClientKeyBase64:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional base64 client private key for mTLS (openssl base64 -A -in key.pem).
+  InviteVerification:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for role=verification.
+  InviteLending:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for role=lending.
+  InviteAggregation:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for role=aggregation.
+  DefaultAcctType:
+    Type: String
+    Default: D
+    MinLength: 1
+    MaxLength: 4
+    Description: Default jXchange AcctType when a vendor omits ?type=.
+  LogRetentionInDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 3653
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.44.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.44.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.44.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Gateway Lambda egress only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  JxchangeSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/jxchange-core"
+      SecretString: !Sub |
+        {
+          "endpointUrl": "${JxchangeEndpointUrl}",
+          "instRtId": "${InstRtId}",
+          "instEnv": "${InstEnv}",
+          "coreType": "${CoreType}",
+          "validConsmName": "${ValidConsmName}",
+          "validConsmProd": "${ValidConsmProd}",
+          "auditUsrId": "${AuditUsrId}",
+          "auditWsId": "${AuditWsId}",
+          "clientCertBase64": "${ClientCertBase64}",
+          "clientKeyBase64": "${ClientKeyBase64}"
+        }
+
+  TenantsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: apiKeyId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: apiKeyId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: gateway-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt TenantsTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref JxchangeSecret
+              - Effect: Allow
+                Action: apigateway:POST
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apikeys"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans/${UsagePlan}/keys"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-gateway:*"
+
+  GatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-gateway"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  GatewayFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-gateway"
+      Description: jXchange SOAP to JSON read gateway
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 29
+      Role: !GetAtt GatewayRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          TENANT_TABLE: !Ref TenantsTable
+          JXCHANGE_SECRET_ARN: !Ref JxchangeSecret
+          USAGE_PLAN_ID: !Ref UsagePlan
+          CORE_TYPE: !Ref CoreType
+          DEFAULT_ACCT_TYPE: !Ref DefaultAcctType
+          INVITE_VERIFICATION: !Ref InviteVerification
+          INVITE_LENDING: !Ref InviteLending
+          INVITE_AGGREGATION: !Ref InviteAggregation
+          UPSTREAM_TIMEOUT_MS: "8000"
+      Code:
+        ZipFile: |
+         //__GATEWAY_CODE__
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  PortalResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: portal
+
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: health
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: "{proxy+}"
+
+  PortalGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref PortalResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  PortalPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref PortalResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  HealthGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  ProxyAny:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PortalGet
+      - PortalPost
+      - HealthGet
+      - ProxyAny
+    Properties:
+      RestApiId: !Ref Api
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      Description: Vendor usage plan (rate limit and daily quota)
+      ApiStages:
+        - ApiId: !Ref Api
+          Stage: !Ref ApiStage
+      Throttle:
+        RateLimit: 50
+        BurstLimit: 100
+      Quota:
+        Limit: 100000
+        Period: DAY
+
+  ApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GatewayFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/*"
+
+Outputs:
+  GatewayUrl:
+    Description: Base URL for vendor API calls.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  AdminPortalUrl:
+    Description: Role-invite API key portal.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/portal"
+  HealthUrl:
+    Description: Unauthenticated health check.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/health"
+  OperationsUrl:
+    Description: Authenticated catalog of supported read operations.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/operations"
+  StaticEgressIp:
+    Description: Whitelist this IP with Jack Henry for the jXchange endpoint.
+    Value: !Ref NatEip
+  CoreSecretArn:
+    Description: Secrets Manager ARN holding the jXchange consumer credentials and optional mTLS material.
+    Value: !Ref JxchangeSecret

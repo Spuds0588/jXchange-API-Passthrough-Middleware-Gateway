@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing guide
+    url: https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/CONTRIBUTING.md
+    about: How to report bugs, open pull requests, and sanitize evidence.
+  - name: Agent and maintainer manual
+    url: https://github.com/Spuds0588/jXchange-API-Passthrough-Middleware-Gateway/blob/main/AGENTS.md
+    about: Operating rules, scope boundaries, and verification expectations.

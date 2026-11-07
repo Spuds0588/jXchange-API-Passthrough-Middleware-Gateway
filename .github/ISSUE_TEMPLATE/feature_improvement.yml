@@ -1,0 +1,49 @@
+name: Feature or improvement
+description: Propose a change to the gateway, docs, or deployment.
+title: "[improvement] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read `AGENTS.md` first. YAGNI applies: describe the deployment problem, not a speculative feature.
+        Write operations and money movement need a separate design review.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The deployment or integration problem, ideally with sanitized evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Smallest change that solves it
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Area
+      options:
+        - jXchange SOAP translation
+        - Personas and masking
+        - Onboarding and API keys
+        - Deployment template and networking
+        - Docs, agent directions, landing page
+        - Tests and local fakes
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: I can open a pull request for this.
+        - label: I can test this against a real core or a deployed stack and report sanitized results.
+        - label: I would like to become a long-term contributor.

@@ -1,0 +1,23 @@
+<CustInqResponse xmlns="http://jackhenry.com/jxchange/TPG/2008">
+  <MsgRsHdr>
+    <jXchangeHdr>
+      <JxVer>R2024.1</JxVer>
+      <InstRtId>011001276</InstRtId>
+      <InstEnv>TEST</InstEnv>
+    </jXchangeHdr>
+  </MsgRsHdr>
+  <CustInqRec>
+    <CustId>{{CUST_ID}}</CustId>
+    <CustType>Individual</CustType>
+    <PersonName>
+      <FirstName>Jane</FirstName>
+      <LastName>Doe</LastName>
+    </PersonName>
+    <Addr>
+      <AddrLine1>456 Oak Ave</AddrLine1>
+      <City>Austin</City>
+      <State>TX</State>
+      <PostalCode>78701</PostalCode>
+    </Addr>
+  </CustInqRec>
+</CustInqResponse>
