@@ -92,3 +92,16 @@ new dated entry.
 - `GET /v1/accounts/123456789/transactions?type=D&limit=2` → 200 with normalized transactions.
 - `GET /v1/accounts/123456789` without a key → 403.
 - The recorded server PID was killed and confirmed stopped; no dev server was left running.
+
+## 2026-11-07 — Production verification and a CI portability fix
+
+- Enabled GitHub Pages on `main` / (root) through the repository Pages API. The Pages build completed and
+  serves `https://spuds0588.github.io/jXchange-API-Passthrough-Middleware-Gateway/`.
+- `npm run verify:production` passed on the first attempt: the served `index.html` SHA-256 matched the
+  committed file (`74e1cb3e…35b7`), and `robots.txt`, `sitemap.xml`, and `llms.txt` returned 200 with the
+  expected content types. Live page: HTTP 200, `text/html`, title and description present, two JSON-LD
+  blocks. This verifies the static site only; the AWS API is not deployed.
+- The first CI run failed on Node 24 only: `node --test test/` there resolves `test/` as a module path and
+  throws `MODULE_NOT_FOUND`, while Node 20 accepts the directory. Changed the `test` script to
+  `node --test test/*.test.js`, the convention already used by the BytePro sister project, which works on
+  both runners. The suite itself was never failing.

@@ -51,6 +51,7 @@ Last updated: 2026-11-07.
 - [x] `robots.txt`, `sitemap.xml`, `llms.txt` with issue/PR contribution guidance.
 - [x] Enable GitHub Pages on `main` and verify the live page byte-matches `index.html`.
 - [x] Commit and push the MVP.
+- [x] CI green on Node 20 and 24 (test script uses an explicit `test/*.test.js` glob).
 
 ## Contribution queue (not started)
 
