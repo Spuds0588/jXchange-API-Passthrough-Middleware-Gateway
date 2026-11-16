@@ -1,7 +1,21 @@
 # todo.md — jXchange Gateway
 
 Single source of truth for current work. Tick items; never delete them. Decisions live in `history.md`.
-Last updated: 2026-11-07.
+Last updated: 2026-11-16.
+
+
+## Priority 1 (sister-project parity) — loan-file documents, underwriting conditions, and loan submission
+
+Decision (2026-11-16): **this repo does not participate in loan-file parity.** jXchange is the Jack Henry
+core-inquiry surface — accounts (`AcctInq`), account history (`AcctHistSrch`), and customers (`CustInq`).
+It has no mortgage loan, document, condition, or milestone capability, so there is nothing to expose and
+no submittal stage to flip. Document, condition, and loan-submission work stays in the three LOS repos and
+is researched there (`docs/parity-implementation-notes.md` in each of them).
+
+- [x] Feature-polarity decision: jXchange is account/transaction focused with no mortgage loan capability, so it does not take loan-file documents, conditions, or loan submission
+- [x] Record the decision here and in the shared oversight folder, so the missing surface is an explicit family choice rather than an accidental gap
+- [x] Shared contract guard: guest-facing copy describes jXchange as a core-inquiry gateway; the LOS repos are the ones that share the loan-file capability family
+- [—] WILL NOT BUILD: loan document, condition, and submission surfaces — there is no upstream jXchange capability to passthrough
 
 ## Phase 1 — Repository and conventions
 
@@ -52,16 +66,3 @@ Last updated: 2026-11-07.
 - [x] Enable GitHub Pages on `main` and verify the live page byte-matches `index.html`.
 - [x] Commit and push the MVP.
 - [x] CI green on Node 20 and 24 (test script uses an explicit `test/*.test.js` glob).
-
-## Contribution queue (not started)
-
-- [ ] Confirm `AcctInq`/`AcctHistSrch`/`CustInq` response shapes against a real Silverlake or Symitar core
-  and replace or extend `fixtures/` with sanitized captures. **Needs a deployment report.**
-- [ ] Confirm whether the target jXchange endpoint requires WS-Security username tokens in addition to mTLS.
-  **Needs a deployment report.**
-- [ ] Verify a real CloudFormation deploy, API Gateway key creation, usage-plan enforcement, and the NAT
-  egress allowlist. **Needs an AWS account.**
-- [ ] Add an account-to-organization check so a partner key cannot read another partner's accounts.
-- [ ] Single-use, revocable vendor invites instead of one global code per role.
-- [ ] Consider a narrow, separately reviewed write design (no money movement without idempotency and audit).
-- [ ] Publish a per-core `AcctType`/`AcctStat` cheat sheet once real institutions confirm the codes.

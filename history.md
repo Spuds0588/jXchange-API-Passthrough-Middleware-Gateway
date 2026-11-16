@@ -105,3 +105,16 @@ new dated entry.
   throws `MODULE_NOT_FOUND`, while Node 20 accepts the directory. Changed the `test` script to
   `node --test test/*.test.js`, the convention already used by the BytePro sister project, which works on
   both runners. The suite itself was never failing.
+
+## 2026-11-16 — Loan-file parity decision: jXchange does not participate
+
+- **Decision.** This repo does not take loan-file documents, underwriting conditions, or loan
+  registration/submission. jXchange is the Jack Henry core-inquiry surface (`AcctInq`, `AcctHistSrch`,
+  `CustInq`) over accounts and transactions; it exposes no mortgage loan, document, condition, or milestone
+  object, so there is no upstream capability to passthrough and no submittal stage to flip.
+- **Not a gap.** The family's loan-file capability lives in Encompass, MeridianLink Mortgage, and BytePro
+  Enterprise Cloud, each of which now carries `docs/parity-implementation-notes.md` for that work. Treating a
+  missing loan surface here as a defect would be the actual mistake.
+- **Cleanup.** The parity section in `todo.md` had been duplicated into two identical blocks; it is now one
+  decided block so the file has a single source of truth, and the "if participating" branches are closed.
+- **Daily check.** Zero open issues, zero open PRs, and zero closed issues/PRs across the four repos.
